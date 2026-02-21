@@ -3,6 +3,11 @@ import time
 
 import button
 
+from settings import *
+from assets_loader import load_assets
+from simulation_stats import SimulationStats
+from ui_sim import draw_text, draw_bg, draw_sim_hud, draw_sim_report
+
 class Slider:
     def __init__(self, x, y, w, min_val, max_val, init_val, step=10, label=""):
         self.x = x
@@ -47,6 +52,169 @@ class Slider:
             raw   = self.min_val + (rel_x / self.w) * (self.max_val - self.min_val)
             self.value = int(round(raw / self.step) * self.step)
             self.value = max(self.min_val, min(self.max_val, self.value))
+
+
+# ──────────────────────────────────────────────
+#  CONFIG PAGE
+# ──────────────────────────────────────────────
+
+def draw_config_page(screen, clock, assets, init_vision_w, init_idle_chance):
+    """
+    Settings page between menu and game.
+    Background = game parallax bg.
+    PLAY button = the same start_img used on the main menu.
+    Returns (vision_w, idle_chance) or None (ESC → back to menu).
+    """
+    W, H = screen.get_size()
+    font_title = pygame.font.SysFont('Futura', 28, bold=True)
+    font_med   = pygame.font.SysFont('Futura', 20)
+    font_small = pygame.font.SysFont('Futura', 15)
+
+    slider_w = int(W * 0.55)
+    cx = W // 2
+
+    slider_vision = Slider(cx - slider_w // 2, int(H * 0.40),
+                           slider_w, 60, 400, init_vision_w, step=10,
+                           label="Enemy Vision Width")
+    slider_idle   = Slider(cx - slider_w // 2, int(H * 0.57),
+                           slider_w, 20, 600, init_idle_chance, step=20,
+                           label="Enemy Idle Chance  (1 / N)")
+
+    # Use the real start_img button
+    start_img = assets["start_img"]
+    play_btn  = button.Button(cx - start_img.get_width() // 2,
+                              int(H * 0.73), start_img, 1)
+
+    fade = 255
+
+    while True:
+        clock.tick(60)
+
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                return None
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                return None
+            slider_vision.handle_event(event)
+            slider_idle.handle_event(event)
+
+        draw_bg(screen, 0, assets, W, H)
+
+        panel_w = int(W * 0.70)
+        panel_h = int(H * 0.68)
+        panel   = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
+        panel.fill((8, 8, 12, 205))
+        px = (W - panel_w) // 2
+        py = int(H * 0.13)
+        screen.blit(panel, (px, py))
+        pygame.draw.rect(screen, (220, 45, 55), (px, py, panel_w, panel_h), 2, border_radius=3)
+
+        t_surf = font_title.render("MISSION  SETTINGS", True, (255, 255, 255))
+        screen.blit(t_surf, t_surf.get_rect(centerx=cx, y=py + 18))
+        pygame.draw.line(screen, (220, 45, 55),
+                         (px + 28, py + 58), (px + panel_w - 28, py + 58), 1)
+
+        slider_vision.draw(screen, font_med)
+        slider_idle.draw(screen, font_med)
+
+        h1 = font_small.render(
+            "Smaller vision = enemies harder to spot you      |      Higher N = enemies idle less often",
+            True, (155, 165, 175))
+        h2 = font_small.render(
+            "Live tuning during gameplay:   F2 / F3  Vision      F4 / F5  Idle      F1  Toggle HUD",
+            True, (110, 120, 130))
+        screen.blit(h1, h1.get_rect(centerx=cx, y=int(H * 0.68)))
+        screen.blit(h2, h2.get_rect(centerx=cx, y=int(H * 0.71)))
+
+        if play_btn.draw(screen):
+            return slider_vision.value, slider_idle.value
+
+        if fade > 0:
+            fo = pygame.Surface((W, H))
+            fo.fill((0, 0, 0))
+            fo.set_alpha(fade)
+            screen.blit(fo, (0, 0))
+            fade = max(0, fade - 12)
+
+        pygame.display.flip()
+
+
+# ──────────────────────────────────────────────
+#  LEVEL INTRO FLOATING TEXT
+# ──────────────────────────────────────────────
+
+class LevelIntro:
+    FADE_IN  = 45
+    HOLD     = 90
+    FADE_OUT = 55
+
+    def __init__(self):
+        self.active = False
+        self.timer  = 0
+        self.level  = 1
+        self._font  = None
+
+    def _get_font(self):
+        if self._font is None:
+            for name in ['Arial Black', 'Impact', 'Arial', 'Verdana']:
+                try:
+                    f = pygame.font.SysFont(name, 80, bold=True)
+                    f.render("TEST", True, (255, 255, 255))
+                    self._font = f
+                    break
+                except Exception:
+                    pass
+            if self._font is None:
+                self._font = pygame.font.Font(None, 80)
+        return self._font
+
+    def trigger(self, level: int):
+        self.level  = level
+        self.timer  = self.FADE_IN + self.HOLD + self.FADE_OUT
+        self.active = True
+
+    def update_draw(self, screen: pygame.Surface):
+        if not self.active:
+            return
+        self.timer -= 1
+        if self.timer <= 0:
+            self.active = False
+            return
+
+        total   = self.FADE_IN + self.HOLD + self.FADE_OUT
+        elapsed = total - self.timer
+        if elapsed < self.FADE_IN:
+            alpha = int(255 * elapsed / self.FADE_IN)
+        elif elapsed < self.FADE_IN + self.HOLD:
+            alpha = 255
+        else:
+            p     = elapsed - self.FADE_IN - self.HOLD
+            alpha = int(255 * (1.0 - p / self.FADE_OUT))
+        alpha = max(0, min(255, alpha))
+
+        W, H   = screen.get_size()
+        font   = self._get_font()
+        text   = f"LEVEL  {self.level}"
+        main_s = font.render(text, True, (255, 255, 255))
+        tw, th = main_s.get_size()
+        pad    = 30
+        bar_h  = 5
+        cw     = tw + pad * 2
+        ch     = th + bar_h + 16
+
+        comp   = pygame.Surface((cw, ch), pygame.SRCALPHA)
+        shadow = font.render(text, True, (10, 10, 10))
+        comp.blit(shadow, (pad + 4, 4))
+        comp.blit(main_s, (pad, 0))
+        pygame.draw.rect(comp, (220, 45, 55), (pad, th + 8, tw, bar_h))
+        comp.set_alpha(alpha)
+        screen.blit(comp, (W // 2 - cw // 2, H // 2 - ch // 2))
+
+
+# ──────────────────────────────────────────────
+#  MAIN
+# ──────────────────────────────────────────────
+
 
 
 def main():
