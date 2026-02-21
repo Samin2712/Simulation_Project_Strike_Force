@@ -216,3 +216,228 @@ class Soldier(pygame.sprite.Sprite):
                 screen_scroll = -dx
 
         return screen_scroll, level_complete
+
+    def shoot(self):
+        if self.shoot_cooldown == 0 and self.ammo > 0:
+            self.shoot_cooldown = 20
+            self.ammo -= 1
+            owner = 'player' if self.char_type == 'player' else 'enemy'
+            SIM.record_shot(owner)
+            bullet = Bullet(self.rect.centerx + (0.75 * self.rect.size[0] * self.direction), self.rect.centery, self.direction, owner)
+            BULLET_GROUP.add(bullet)
+
+    def ai(self):
+        if self.alive and PLAYER.alive:
+            vision_w = ENEMY_VISION_W_REF["value"]
+            vision_h = ENEMY_VISION_H_REF["value"]
+
+            # Build the forward-facing vision rectangle
+            self.vision.size = (vision_w, vision_h)
+            self.vision.center = (
+                self.rect.centerx + ((vision_w // 2) * self.direction),
+                self.rect.centery
+            )
+
+            # Can the enemy SEE the player right now (player is in front vision cone)?
+            player_in_vision = self.vision.colliderect(PLAYER.rect)
+
+            # ---- react if shot from behind while not in combat ----
+            if self.was_shot_at and self.ai_state in ('patrol', 'alert'):
+                # Turn toward player
+                if PLAYER.rect.centerx > self.rect.centerx:
+                    self.direction = 1
+                    self.flip = False
+                else:
+                    self.direction = -1
+                    self.flip = True
+                self.was_shot_at = False
+                # Re-check vision after turning
+                self.vision.center = (
+                    self.rect.centerx + ((vision_w // 2) * self.direction),
+                    self.rect.centery
+                )
+                player_in_vision = self.vision.colliderect(PLAYER.rect)
+                if player_in_vision:
+                    self.ai_state = 'combat'
+                else:
+                    # Player hid or out of range — do a brief search
+                    self.ai_state = 'search'
+                    self.search_timer = 120
+
+            # ===================== STATE MACHINE =====================
+
+            if self.ai_state == 'patrol':
+                # Random idle chance
+                if not self.ideling and random.randint(1, ENEMY_IDLE_CHANCE_REF["value"]) == 1:
+                    self.update_action(0)  # idle animation
+                    self.ideling = True
+                    self.ideling_counter = random.randint(40, 90)
+
+                if player_in_vision:
+                    self.ideling = False
+                    self.ai_state = 'alert'
+                    self.alert_timer = 30   # short pause before engaging
+                elif self.ideling:
+                    self.ideling_counter -= 1
+                    if self.ideling_counter <= 0:
+                        self.ideling = False
+                else:
+                    # Walk within patrol range
+                    self._patrol_walk()
+
+            elif self.ai_state == 'alert':
+                # Enemy spotted player — brief pause, then engage
+                self.update_action(0)  # stand still, face player
+                if PLAYER.rect.centerx > self.rect.centerx:
+                    self.direction = 1
+                    self.flip = False
+                else:
+                    self.direction = -1
+                    self.flip = True
+
+                self.alert_timer -= 1
+                if not player_in_vision:
+                    # Lost sight before fully engaging — go back to patrol
+                    self.ai_state = 'patrol'
+                elif self.alert_timer <= 0:
+                    self.ai_state = 'combat'
+
+            elif self.ai_state == 'combat':
+                if player_in_vision:
+                    # Face and shoot player
+                    self.update_action(0)
+                    if PLAYER.rect.centerx > self.rect.centerx:
+                        self.direction = 1
+                        self.flip = False
+                    else:
+                        self.direction = -1
+                        self.flip = True
+                    self.vision.center = (
+                        self.rect.centerx + ((vision_w // 2) * self.direction),
+                        self.rect.centery
+                    )
+                    self.shoot()
+                else:
+                    # Player left vision — search briefly then patrol
+                    self.ai_state = 'search'
+                    self.search_timer = 150   # ~2.5 seconds at 60fps
+
+            elif self.ai_state == 'search':
+                # Walk toward where the player was last seen (keep facing that direction)
+                self.search_timer -= 1
+                if player_in_vision:
+                    # Re-spotted!
+                    self.ai_state = 'combat'
+                elif self.search_timer <= 0:
+                    # Give up — return to patrol
+                    self.ai_state = 'patrol'
+                    self.ideling = False
+                else:
+                    # Keep walking in the direction of player (limited by patrol bounds)
+                    ai_moving_right = (self.direction == 1)
+                    ai_moving_left = not ai_moving_right
+                    self.move(ai_moving_left, ai_moving_right)
+                    self.update_action(1)
+
+        # ---- scroll compensation (always) ----
+        self.rect.x += SCREEN_SCROLL_REF["screen_scroll"]
+        self.vision.x += SCREEN_SCROLL_REF["screen_scroll"]
+        # Update patrol origin with scroll too
+        self.patrol_origin_x += SCREEN_SCROLL_REF["screen_scroll"]
+
+    def _patrol_walk(self):
+        """Walk left/right within patrol_half_range of patrol_origin_x."""
+        ai_moving_right = (self.direction == 1)
+        ai_moving_left = not ai_moving_right
+        self.move(ai_moving_left, ai_moving_right)
+        self.update_action(1)
+        self.move_counter += 1
+
+        # Turn around if walked too far from origin or hit a wall (move handles wall turns)
+        left_bound = self.patrol_origin_x - self.patrol_half_range
+        right_bound = self.patrol_origin_x + self.patrol_half_range
+
+        if self.rect.centerx < left_bound and self.direction == -1:
+            self.direction = 1
+            self.flip = False
+            self.move_counter = 0
+        elif self.rect.centerx > right_bound and self.direction == 1:
+            self.direction = -1
+            self.flip = True
+            self.move_counter = 0
+
+    def update_animation(self):
+        ANIMATION_COOLDOWN = 100
+        self.image = self.animation_list[self.action][self.frame_index]
+        if pygame.time.get_ticks() - self.update_time > ANIMATION_COOLDOWN:
+            self.update_time = pygame.time.get_ticks()
+            self.frame_index += 1
+        if self.frame_index >= len(self.animation_list[self.action]):
+            if self.action == 3:
+                self.frame_index = len(self.animation_list[self.action]) - 1
+            else:
+                self.frame_index = 0
+
+    def update_action(self, new_action):
+        if new_action != self.action:
+            self.action = new_action
+            self.frame_index = 0
+            self.update_time = pygame.time.get_ticks()
+
+    def check_alive(self):
+        if self.health <= 0 and self.alive:
+            self.health = 0
+            self.speed = 0
+            self.alive = False
+            self.update_action(3)
+
+            if self.char_type == 'enemy':
+                if self.last_hit_by == 'player':
+                    SIM.record_kill('player', method=self.last_hit_method)
+
+    def draw(self):
+        SCREEN.blit(pygame.transform.flip(self.image, self.flip, False), self.rect)
+
+class Bullet(pygame.sprite.Sprite):
+    def __init__(self, x, y, direction, owner):
+        super().__init__()
+        self.image = BULLET_IMG
+        self.rect = self.image.get_rect()
+        self.rect.center = (x, y)
+        self.direction = direction
+        self.speed = 10
+        self.owner = owner  # 'player' or 'enemy'
+
+    def update(self):
+        from settings import SCREEN_WIDTH
+        self.rect.x += (self.direction * self.speed) + SCREEN_SCROLL_REF["screen_scroll"]
+
+        if self.rect.right < 0 or self.rect.left > SCREEN_WIDTH:
+            self.kill()
+
+        for tile in WORLD.obstacle_list:
+            if tile[1].colliderect(self.rect):
+                self.kill()
+
+        if self.owner == 'enemy':
+            if pygame.sprite.spritecollide(PLAYER, BULLET_GROUP, False):
+                if PLAYER.alive:
+                    damage = 5
+                    PLAYER.health -= damage
+                    PLAYER.last_hit_by = 'enemy'
+                    PLAYER.last_hit_method = 'bullet'
+                    SIM.record_hit('enemy', 'player', damage)
+                    self.kill()
+
+        if self.owner == 'player':
+            for enemy in ENEMY_GROUP:
+                if pygame.sprite.spritecollide(enemy, BULLET_GROUP, False):
+                    if enemy.alive:
+                        damage = 25
+                        enemy.health -= damage
+                        enemy.last_hit_by = 'player'
+                        enemy.last_hit_method = 'bullet'
+                        enemy.was_shot_at = True   # trigger react-and-turn logic in ai()
+                        SIM.record_hit('player', 'enemy', damage)
+                        self.kill()
+                        break
