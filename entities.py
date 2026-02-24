@@ -441,3 +441,141 @@ class Bullet(pygame.sprite.Sprite):
                         SIM.record_hit('player', 'enemy', damage)
                         self.kill()
                         break
+
+class Grenade(pygame.sprite.Sprite):
+    def __init__(self, x, y, direction):
+        super().__init__()
+        self.timer = 100
+        self.vel_y = -11
+        self.image = GRENADE_IMG
+        self.rect = self.image.get_rect()
+        self.rect.center = (x, y)
+        self.width = self.image.get_width()
+        self.height = self.image.get_height()
+        self.direction = direction
+        self.speed = 10
+
+    def update(self):
+        self.vel_y += GRAVITY
+        dx = self.direction * self.speed
+        dy = self.vel_y
+
+        for tile in WORLD.obstacle_list:
+            if tile[1].colliderect(self.rect.x + dx, self.rect.y, self.rect.width, self.rect.height):
+                self.direction *= -1
+                dx = self.direction * self.speed
+            if tile[1].colliderect(self.rect.x, self.rect.y + dy, self.rect.width, self.rect.height):
+                self.speed = 0
+                if self.vel_y < 0:
+                    dy = tile[1].bottom - self.rect.top
+                    self.vel_y = 0
+                elif self.vel_y >= 0:
+                    dy = tile[1].top - self.rect.bottom
+                    self.vel_y = 0
+
+        self.rect.x += dx + SCREEN_SCROLL_REF["screen_scroll"]
+        self.rect.y += dy
+
+        self.timer -= 1
+        if self.timer <= 0:
+            self.kill()
+            explosion = Explosion(self.rect.x, self.rect.y, 0.5)
+            EXPLOSION_GROUP.add(explosion)
+
+            # player damage
+            if abs(self.rect.centerx - PLAYER.rect.centerx) < TILE_SIZE_REF * 2 and abs(self.rect.centery - PLAYER.rect.centery) < TILE_SIZE_REF * 2:
+                damage = 50
+                PLAYER.health -= damage
+                PLAYER.last_hit_by = 'player'
+                PLAYER.last_hit_method = 'grenade'
+                SIM.damage_taken_by_player += damage
+
+            # enemy damage
+            for enemy in ENEMY_GROUP:
+                if abs(self.rect.centerx - enemy.rect.centerx) < TILE_SIZE_REF * 2 and abs(self.rect.centery - enemy.rect.centery) < TILE_SIZE_REF * 2:
+                    damage = 50
+                    enemy.health -= damage
+                    enemy.last_hit_by = 'player'
+                    enemy.last_hit_method = 'grenade'
+                    SIM.record_grenade_damage(damage)
+
+class Explosion(pygame.sprite.Sprite):
+    def __init__(self, x, y, scale):
+        super().__init__()
+        self.images = []
+        for i in range(5):
+            img = pygame.image.load(f'assets/img/explosion/exp{i + 1}.png').convert_alpha()
+            img = pygame.transform.scale(img, (int(img.get_width() * scale), int(img.get_height() * scale)))
+            self.images.append(img)
+        self.frame_index = 0
+        self.image = self.images[self.frame_index]
+        self.rect = self.image.get_rect()
+        self.rect.center = (x, y)
+        self.counter = 0
+
+    def update(self):
+        self.rect.x += SCREEN_SCROLL_REF["screen_scroll"]
+        EXPLOSION_SPEED = 4
+        self.counter += 1
+        if self.counter >= EXPLOSION_SPEED:
+            self.counter = 0
+            self.frame_index += 1
+            if self.frame_index >= len(self.images):
+                self.kill()
+            else:
+                self.image = self.images[self.frame_index]
+
+class Decoration(pygame.sprite.Sprite):
+    def __init__(self, img, x, y):
+        super().__init__()
+        self.image = img
+        self.rect = self.image.get_rect()
+        self.rect.midtop = (x + TILE_SIZE_REF // 2, y + (TILE_SIZE_REF - self.image.get_height()))
+
+    def update(self):
+        self.rect.x += SCREEN_SCROLL_REF["screen_scroll"]
+
+class Water(pygame.sprite.Sprite):
+    def __init__(self, img, x, y):
+        super().__init__()
+        self.image = img
+        self.rect = self.image.get_rect()
+        self.rect.midtop = (x + TILE_SIZE_REF // 2, y + (TILE_SIZE_REF - self.image.get_height()))
+
+    def update(self):
+        self.rect.x += SCREEN_SCROLL_REF["screen_scroll"]
+
+class Exit(pygame.sprite.Sprite):
+    def __init__(self, img, x, y):
+        super().__init__()
+        self.image = img
+        self.rect = self.image.get_rect()
+        self.rect.midtop = (x + TILE_SIZE_REF // 2, y + (TILE_SIZE_REF - self.image.get_height()))
+
+    def update(self):
+        self.rect.x += SCREEN_SCROLL_REF["screen_scroll"]
+
+class ItemBox(pygame.sprite.Sprite):
+    def __init__(self, item_type, x, y):
+        super().__init__()
+        self.item_type = item_type
+        self.image = ITEM_BOXES[self.item_type]
+        self.rect = self.image.get_rect()
+        self.rect.midtop = (x + TILE_SIZE_REF // 2, y + (TILE_SIZE_REF - self.image.get_height()))
+
+    def update(self):
+        self.rect.x += SCREEN_SCROLL_REF["screen_scroll"]
+        if pygame.sprite.collide_rect(self, PLAYER):
+            if self.item_type == 'Health':
+                if PLAYER.health < PLAYER.max_health:
+                    PLAYER.health += 25
+                    if PLAYER.health > PLAYER.max_health:
+                        PLAYER.health = PLAYER.max_health
+            elif self.item_type == 'Ammo':
+                PLAYER.ammo += 15
+            elif self.item_type == 'Grenade':
+                PLAYER.grenades += 3
+            self.kill()
+
+
+
